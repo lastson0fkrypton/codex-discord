@@ -41,8 +41,8 @@ Because it reads local Codex thread storage under `~/.codex`, threads created in
 - Works with threads created by this bot and with VS Code Codex threads for the same project path
 - Discord approval UI for tool calls and file changes
 - Interactive user-input questions from Codex surfaced in Discord
-- Live activity log with command, file, search, tool, and plan updates throughout each task
-- Stop active turns from a button or `/stop`
+- Progress messages interleaved with compact activity summaries, like the VS Code transcript
+- Stop active turns with `/stop`
 - Queue follow-up prompts while a task is already running
 - Attachment support for images and files
 - Codex usage snapshot from Discord with `/usage`
@@ -71,7 +71,7 @@ Because it reads local Codex thread storage under `~/.codex`, threads created in
 - When a message arrives, it starts or resumes a Codex thread for that project.
 - `/sessions` reads local Codex thread metadata and lets you resume an existing thread.
 - Assistant output is streamed back into Discord and split safely for long messages and code blocks.
-- Each task has a separate live activity log. Entries show what Codex is doing and whether each action is running, completed, failed, or declined. Long logs continue on additional pages, and plan updates appear on the latest page. The log remains visible after the task finishes.
+- Discord preserves each assistant progress message and final answer in order, with compact activity summaries between them (for example, “Context automatically compacted” and “Read files, ran a command”). Consecutive tool calls are grouped rather than printed as raw shell commands. Transcript messages have no Stop buttons; use `/stop` to interrupt a task.
 
 ## Requirements
 

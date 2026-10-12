@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { MessageCreateOptions, TextChannel } from "discord.js";
+import type { TextChannel } from "discord.js";
 import {
   upsertSession,
   updateSessionStatus,
@@ -7,17 +7,12 @@ import {
   getSession,
   setAutoApprove,
 } from "../db/database.js";
-import { getConfig } from "../utils/config.js";
 import { L } from "../utils/i18n.js";
 import { codexAppServer } from "./app-server-client.js";
-import { ActivityLog } from "./activity-log.js";
+import { TurnTranscript } from "./turn-transcript.js";
 import {
   createAskUserQuestionEmbed,
-  createCompletedButton,
-  createResultEmbed,
-  createStopButton,
   createToolApprovalEmbed,
-  splitMessage,
 } from "./output-formatter.js";
 
 interface ActiveSession {
@@ -37,15 +32,8 @@ interface QuestionPayload {
 
 type ApprovalDecision = "accept" | "acceptForSession" | "decline" | "cancel";
 
-type StreamMessage = Awaited<ReturnType<TextChannel["send"]>>;
 type StreamState = {
-  buffer: string;
-  messages: StreamMessage[];
-  lastEditTime: number;
-  stopRow: ReturnType<typeof createStopButton>;
-  startedAt: number;
-  activity: ActivityLog;
-  heartbeat: NodeJS.Timeout;
+  transcript: TurnTranscript;
   lastError: string | null;
 };
 
@@ -145,20 +133,10 @@ export class SessionManager {
 
     upsertSession(dbId, channelId, threadId, "online");
 
-    const stopRow = createStopButton(channelId);
-    const startedAt = Date.now();
-    const activity = new ActivityLog(channel, startedAt);
-    await activity.start();
-    const heartbeat = setInterval(() => activity.refresh(), 15_000);
+    const transcript = new TurnTranscript(channel);
 
     this.streamState.set(channelId, {
-      buffer: "",
-      messages: [],
-      lastEditTime: 0,
-      stopRow,
-      startedAt,
-      activity,
-      heartbeat,
+      transcript,
       lastError: null,
     });
 
@@ -173,7 +151,7 @@ export class SessionManager {
     try {
       await codexAppServer.startTurn(threadId, prompt);
     } catch (error) {
-      await activity.finish("failed");
+      await transcript.finish("failed");
       await channel.send(`❌ ${error instanceof Error ? error.message : "Failed to start Codex turn"}`);
       updateSessionStatus(channelId, "offline");
       this.finishSession(channelId);
@@ -185,7 +163,9 @@ export class SessionManager {
     const threadId = typeof params.threadId === "string" ? params.threadId : null;
     const active = threadId ? this.findActiveByThread(threadId) : undefined;
     if (!active) return;
-    if (typeof params.turnId === "string" && active.turnId && params.turnId !== active.turnId) return;
+    const turn = params.turn as { id?: string } | undefined;
+    const turnId = typeof params.turnId === "string" ? params.turnId : turn?.id;
+    if (turnId && active.turnId && turnId !== active.turnId) return;
 
     const channelId = active.channelId;
     const stream = this.streamState.get(channelId);
@@ -207,7 +187,6 @@ export class SessionManager {
             Array.isArray(status.activeFlags) &&
             status.activeFlags.some((flag) => flag === "waitingOnApproval" || flag === "waitingOnUserInput");
           updateSessionStatus(channelId, waiting ? "waiting" : "online");
-          stream?.activity?.setWaiting(waiting ? L("Waiting for approval or input", "승인 또는 입력 대기 중") : "");
         } else if (status.type === "idle") {
           updateSessionStatus(channelId, "idle");
         }
@@ -219,17 +198,16 @@ export class SessionManager {
         const item = params.item as Record<string, unknown> | undefined;
         if (!item || typeof item.type !== "string") return;
 
-        stream.activity?.recordItem(item, msg.method === "item/completed");
+        stream.transcript.recordItem(item, msg.method === "item/completed");
         return;
       }
       case "turn/plan/updated": {
-        stream?.activity?.updatePlan(params.plan);
+        stream?.transcript.updatePlan(params.plan);
         return;
       }
       case "item/agentMessage/delta": {
-        if (!stream || typeof params.delta !== "string") return;
-        stream.buffer += params.delta;
-        await this.flushStream(channelId);
+        if (!stream || typeof params.delta !== "string" || typeof params.itemId !== "string") return;
+        stream.transcript.appendText(params.itemId, params.delta);
         return;
       }
       case "error": {
@@ -256,8 +234,7 @@ export class SessionManager {
               ? `${turn.error.message ?? "Turn failed"}\n${turn.error.additionalDetails}`
               : turn?.error?.message ?? stream?.lastError ?? "Turn failed";
           if (stream) {
-            await this.flushStream(channelId, true, false);
-            await stream.activity?.finish("failed");
+            await stream.transcript.finish("failed");
           }
           await active.channel.send({ content: `❌ ${message}`.slice(0, 2000), allowedMentions: { parse: [] } }).catch(() => {});
           updateSessionStatus(channelId, "offline");
@@ -266,15 +243,7 @@ export class SessionManager {
         }
 
         if (stream) {
-          await this.flushStream(channelId, true, statusType !== "interrupted");
-          await stream.activity?.finish(statusType === "interrupted" ? "interrupted" : "completed");
-          const durationMs = Date.now() - stream.startedAt;
-          if (statusType !== "interrupted") {
-            const payload: MessageCreateOptions = {
-              embeds: [createResultEmbed(L("Task completed", "작업 완료"), 0, durationMs, getConfig().SHOW_COST)],
-            };
-            await active.channel.send(payload).catch(() => {});
-          }
+          await stream.transcript.finish(statusType === "interrupted" ? "interrupted" : "completed");
         }
 
         updateSessionStatus(channelId, "idle");
@@ -417,40 +386,6 @@ export class SessionManager {
     return answers;
   }
 
-  private async flushStream(channelId: string, final = false, completed = true): Promise<void> {
-    const stream = this.streamState.get(channelId);
-    const active = this.sessions.get(channelId);
-    if (!stream || !active || stream.buffer.length === 0) return;
-
-    const now = Date.now();
-    if (!final && now - stream.lastEditTime < 1500) return;
-    stream.lastEditTime = now;
-
-    const chunks = splitMessage(stream.buffer);
-    try {
-      for (let i = 0; i < chunks.length; i++) {
-        const isLastChunk = i === chunks.length - 1;
-        const payload = {
-          content: chunks[i] || "...",
-          components: isLastChunk
-            ? final
-              ? completed ? [createCompletedButton()] : []
-              : [stream.stopRow]
-            : [],
-        };
-
-        const existingMessage = stream.messages[i];
-        if (existingMessage) {
-          await existingMessage.edit(payload);
-        } else {
-          stream.messages.push(await active.channel.send(payload));
-        }
-      }
-    } catch {
-      // ignore
-    }
-  }
-
   private findActiveByThread(threadId: string): ActiveSession | undefined {
     return [...this.sessions.values()].find((entry) => entry.threadId === threadId);
   }
@@ -466,18 +401,13 @@ export class SessionManager {
     }
 
     updateSessionStatus(channelId, "offline");
-    await this.flushStream(channelId, true, false);
-    await this.streamState.get(channelId)?.activity?.finish("interrupted");
+    await this.streamState.get(channelId)?.transcript.finish("interrupted");
     this.finishSession(channelId);
     return true;
   }
 
   private finishSession(channelId: string): void {
-    const stream = this.streamState.get(channelId);
-    if (stream) {
-      clearInterval(stream.heartbeat);
-      this.streamState.delete(channelId);
-    }
+    this.streamState.delete(channelId);
 
     this.sessions.delete(channelId);
     pendingCustomInputs.delete(channelId);
