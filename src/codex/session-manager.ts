@@ -10,6 +10,7 @@ import {
 import { getConfig } from "../utils/config.js";
 import { L } from "../utils/i18n.js";
 import { codexAppServer } from "./app-server-client.js";
+import { ActivityLog } from "./activity-log.js";
 import {
   createAskUserQuestionEmbed,
   createCompletedButton,
@@ -43,10 +44,8 @@ type StreamState = {
   lastEditTime: number;
   stopRow: ReturnType<typeof createStopButton>;
   startedAt: number;
-  lastActivity: string;
-  toolUseCount: number;
+  activity: ActivityLog;
   heartbeat: NodeJS.Timeout;
-  hasTextOutput: boolean;
   lastError: string | null;
 };
 
@@ -147,36 +146,19 @@ export class SessionManager {
     upsertSession(dbId, channelId, threadId, "online");
 
     const stopRow = createStopButton(channelId);
-    const currentMessage = await channel.send({
-      content: L("⏳ Thinking...", "⏳ 생각 중..."),
-      components: [stopRow],
-    });
-
     const startedAt = Date.now();
-    const heartbeat = setInterval(async () => {
-      const stream = this.streamState.get(channelId);
-      if (!stream || stream.hasTextOutput) return;
-      const elapsed = Math.round((Date.now() - stream.startedAt) / 1000);
-      try {
-        await stream.messages.at(-1)?.edit({
-          content: `⏳ ${stream.lastActivity} (${elapsed}s)`,
-          components: [stream.stopRow],
-        });
-      } catch {
-        // ignore
-      }
-    }, 15_000);
+    const activity = new ActivityLog(channel, startedAt);
+    await activity.start();
+    const heartbeat = setInterval(() => activity.refresh(), 15_000);
 
     this.streamState.set(channelId, {
       buffer: "",
-      messages: [currentMessage],
+      messages: [],
       lastEditTime: 0,
       stopRow,
       startedAt,
-      lastActivity: L("Thinking...", "생각 중..."),
-      toolUseCount: 0,
+      activity,
       heartbeat,
-      hasTextOutput: false,
       lastError: null,
     });
 
@@ -191,6 +173,7 @@ export class SessionManager {
     try {
       await codexAppServer.startTurn(threadId, prompt);
     } catch (error) {
+      await activity.finish("failed");
       await channel.send(`❌ ${error instanceof Error ? error.message : "Failed to start Codex turn"}`);
       updateSessionStatus(channelId, "offline");
       this.finishSession(channelId);
@@ -202,6 +185,7 @@ export class SessionManager {
     const threadId = typeof params.threadId === "string" ? params.threadId : null;
     const active = threadId ? this.findActiveByThread(threadId) : undefined;
     if (!active) return;
+    if (typeof params.turnId === "string" && active.turnId && params.turnId !== active.turnId) return;
 
     const channelId = active.channelId;
     const stream = this.streamState.get(channelId);
@@ -223,46 +207,28 @@ export class SessionManager {
             Array.isArray(status.activeFlags) &&
             status.activeFlags.some((flag) => flag === "waitingOnApproval" || flag === "waitingOnUserInput");
           updateSessionStatus(channelId, waiting ? "waiting" : "online");
+          stream?.activity?.setWaiting(waiting ? L("Waiting for approval or input", "승인 또는 입력 대기 중") : "");
         } else if (status.type === "idle") {
           updateSessionStatus(channelId, "idle");
         }
         return;
       }
-      case "item/started": {
+      case "item/started":
+      case "item/completed": {
         if (!stream) return;
         const item = params.item as Record<string, unknown> | undefined;
         if (!item || typeof item.type !== "string") return;
 
-        if (item.type !== "userMessage") {
-          stream.toolUseCount++;
-        }
-
-        if (item.type === "commandExecution" && typeof item.command === "string") {
-          const command = item.command.length > 80 ? item.command.slice(0, 80) + "…" : item.command;
-          stream.lastActivity = `${L("Running command", "명령어 실행 중")} \`${command}\``;
-        } else if (item.type === "fileChange") {
-          stream.lastActivity = L("Editing files", "파일 편집 중");
-        } else if (item.type === "webSearch") {
-          stream.lastActivity = L("Searching web", "웹 검색 중");
-        }
-
-        if (!stream.hasTextOutput) {
-          const elapsed = Math.round((Date.now() - stream.startedAt) / 1000);
-          try {
-            await stream.messages.at(-1)?.edit({
-              content: `⏳ ${stream.lastActivity} (${elapsed}s) [${stream.toolUseCount} items]`,
-              components: [stream.stopRow],
-            });
-          } catch {
-            // ignore
-          }
-        }
+        stream.activity?.recordItem(item, msg.method === "item/completed");
+        return;
+      }
+      case "turn/plan/updated": {
+        stream?.activity?.updatePlan(params.plan);
         return;
       }
       case "item/agentMessage/delta": {
         if (!stream || typeof params.delta !== "string") return;
         stream.buffer += params.delta;
-        stream.hasTextOutput = true;
         await this.flushStream(channelId);
         return;
       }
@@ -290,20 +256,25 @@ export class SessionManager {
               ? `${turn.error.message ?? "Turn failed"}\n${turn.error.additionalDetails}`
               : turn?.error?.message ?? stream?.lastError ?? "Turn failed";
           if (stream) {
-            await stream.messages.at(-1)?.edit({ content: `❌ ${message}`, components: [] }).catch(() => {});
+            await this.flushStream(channelId, true, false);
+            await stream.activity?.finish("failed");
           }
+          await active.channel.send({ content: `❌ ${message}`.slice(0, 2000), allowedMentions: { parse: [] } }).catch(() => {});
           updateSessionStatus(channelId, "offline");
           this.finishSession(channelId);
           return;
         }
 
         if (stream) {
-          await this.flushStream(channelId, true);
+          await this.flushStream(channelId, true, statusType !== "interrupted");
+          await stream.activity?.finish(statusType === "interrupted" ? "interrupted" : "completed");
           const durationMs = Date.now() - stream.startedAt;
-          const payload: MessageCreateOptions = {
-            embeds: [createResultEmbed(L("Task completed", "작업 완료"), 0, durationMs, getConfig().SHOW_COST)],
-          };
-          await active.channel.send(payload).catch(() => {});
+          if (statusType !== "interrupted") {
+            const payload: MessageCreateOptions = {
+              embeds: [createResultEmbed(L("Task completed", "작업 완료"), 0, durationMs, getConfig().SHOW_COST)],
+            };
+            await active.channel.send(payload).catch(() => {});
+          }
         }
 
         updateSessionStatus(channelId, "idle");
@@ -446,7 +417,7 @@ export class SessionManager {
     return answers;
   }
 
-  private async flushStream(channelId: string, final = false): Promise<void> {
+  private async flushStream(channelId: string, final = false, completed = true): Promise<void> {
     const stream = this.streamState.get(channelId);
     const active = this.sessions.get(channelId);
     if (!stream || !active || stream.buffer.length === 0) return;
@@ -463,7 +434,7 @@ export class SessionManager {
           content: chunks[i] || "...",
           components: isLastChunk
             ? final
-              ? [createCompletedButton()]
+              ? completed ? [createCompletedButton()] : []
               : [stream.stopRow]
             : [],
         };
@@ -495,6 +466,8 @@ export class SessionManager {
     }
 
     updateSessionStatus(channelId, "offline");
+    await this.flushStream(channelId, true, false);
+    await this.streamState.get(channelId)?.activity?.finish("interrupted");
     this.finishSession(channelId);
     return true;
   }

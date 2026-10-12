@@ -123,9 +123,16 @@ export async function execute(
   for (const session of sessions.slice(0, 24)) {
     const preview = session.preview.length > 70 ? session.preview.slice(0, 70) + "…" : session.preview;
     const date = new Date(session.timestamp).toLocaleString();
+    const dateSuffix = ` • ${date}`;
+    // Sources can contain serialized subagent metadata. Reserve room for the date
+    // while keeping the complete description within Discord's 100-character limit.
+    const sourceLimit = Math.max(0, 100 - dateSuffix.length);
+    const source = session.source.length > sourceLimit
+      ? session.source.slice(0, Math.max(0, sourceLimit - 1)) + "…"
+      : session.source;
     options.push({
-      label: preview || "(empty session)",
-      description: `${session.source} • ${date}`,
+      label: String(preview || "(empty session)").slice(0, 100),
+      description: `${source}${dateSuffix}`.slice(0, 100),
       value: session.sessionId,
       ...(activeSessionId === session.sessionId ? { default: true } : {}),
     });
