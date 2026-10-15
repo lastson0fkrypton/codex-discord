@@ -1,0 +1,16 @@
+[
+  { "method": "turn/started", "params": { "turn": { "id": "turn-1" } } },
+  { "method": "item/started", "params": { "item": { "id": "commentary", "type": "agentMessage", "text": "", "phase": "commentary" } } },
+  { "method": "item/agentMessage/delta", "params": { "itemId": "commentary", "delta": "I" } },
+  { "method": "item/agentMessage/delta", "params": { "itemId": "commentary", "delta": " will check the project." } },
+  { "method": "item/completed", "params": { "item": { "id": "commentary", "type": "agentMessage", "text": "I will check the project and run tests.", "phase": "commentary" } } },
+  { "method": "item/reasoning/summaryTextDelta", "params": { "itemId": "reason-1", "summaryIndex": 0, "delta": "Checking which validation covers the change." } },
+  { "method": "item/completed", "params": { "item": { "id": "reason-1", "type": "reasoning", "summary": ["Checking which validation covers the change."], "content": ["RAW_REASONING_MUST_NOT_APPEAR"] } } },
+  { "method": "item/started", "params": { "item": { "id": "cmd-1", "type": "commandExecution", "command": "npm test", "commandActions": [{ "type": "unknown" }] } } },
+  { "method": "item/commandExecution/outputDelta", "params": { "itemId": "cmd-1", "delta": "Running tests...\n" } },
+  { "method": "item/completed", "params": { "item": { "id": "cmd-1", "type": "commandExecution", "command": "npm test", "exitCode": 0, "aggregatedOutput": "All tests passed." } } },
+  { "method": "item/completed", "params": { "item": { "id": "file-1", "type": "fileChange", "status": "completed", "changes": [{ "path": "src/index.ts", "diff": "+fixed", "kind": "update" }] } } },
+  { "method": "turn/diff/updated", "params": { "diff": "--- a/src/index.ts\n+++ b/src/index.ts\n+fixed\n" } },
+  { "method": "item/completed", "params": { "item": { "id": "final", "type": "agentMessage", "phase": "final_answer", "text": "The change is ready. All tests passed." } } },
+  { "method": "turn/completed", "params": { "turn": { "id": "turn-1", "status": "completed" } } }
+]

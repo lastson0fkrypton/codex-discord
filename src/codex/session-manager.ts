@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { MessageCreateOptions, TextChannel } from "discord.js";
+import type { TextChannel } from "discord.js";
 import {
   upsertSession,
   updateSessionStatus,
@@ -10,13 +10,10 @@ import {
 import { getConfig } from "../utils/config.js";
 import { L } from "../utils/i18n.js";
 import { codexAppServer } from "./app-server-client.js";
+import { TurnTranscript } from "./turn-transcript.js";
+import { UserInput, conversationQuestions, type QuestionPayload } from "./user-input.js";
 import {
-  createAskUserQuestionEmbed,
-  createCompletedButton,
-  createResultEmbed,
-  createStopButton,
   createToolApprovalEmbed,
-  splitMessage,
 } from "./output-formatter.js";
 
 interface ActiveSession {
@@ -27,51 +24,26 @@ interface ActiveSession {
   dbId: string;
 }
 
-interface QuestionPayload {
-  id: string;
-  header: string;
-  question: string;
-  options?: Array<{ label: string; description: string }>;
-}
-
 type ApprovalDecision = "accept" | "acceptForSession" | "decline" | "cancel";
 
-type StreamMessage = Awaited<ReturnType<TextChannel["send"]>>;
 type StreamState = {
-  buffer: string;
-  messages: StreamMessage[];
-  lastEditTime: number;
-  stopRow: ReturnType<typeof createStopButton>;
-  startedAt: number;
-  lastActivity: string;
-  toolUseCount: number;
-  heartbeat: NodeJS.Timeout;
-  hasTextOutput: boolean;
+  transcript: TurnTranscript;
   lastError: string | null;
+  lastAssistant?: Record<string, unknown>;
+  nativeQuestion?: boolean;
 };
 
-const pendingApprovals = new Map<
-  number,
-  {
-    resolve: (decision: ApprovalDecision) => void;
-    channelId: string;
-  }
->();
-
-const pendingQuestions = new Map<
-  number,
-  {
-    resolve: (answer: Record<string, { answers: string[] }>) => void;
-    channelId: string;
-    questionId: string;
-  }
->();
-
-const pendingCustomInputs = new Map<string, { requestId: number; questionId: string }>();
+type RequestId = string | number;
+type Approval = { channelId: string; allowSession: boolean; resolve: (decision: ApprovalDecision) => void };
 
 export class SessionManager {
   private sessions = new Map<string, ActiveSession>();
   private initialized = false;
+  private userInput = new UserInput();
+  private approvals = new Map<string, Approval>();
+  private requests = new Map<RequestId, string>();
+  private conversations = new Map<string, symbol>();
+  private conversationRequests = new Map<RequestId, { channelId: string; token: symbol; scope: string }>();
   private static readonly MAX_QUEUE_SIZE = 5;
   private messageQueue = new Map<string, { channel: TextChannel; prompt: string }[]>();
   private pendingQueuePrompts = new Map<string, { channel: TextChannel; prompt: string }>();
@@ -89,7 +61,7 @@ export class SessionManager {
     });
 
     codexAppServer.on("serverRequest", (msg) => {
-      this.handleServerRequest(msg as { id: number; method: string; params: Record<string, unknown> }).catch((error) => {
+      this.handleServerRequest(msg as { id: RequestId; method: string; params: Record<string, unknown> }).catch((error) => {
         console.error("Codex server request error:", error);
       });
     });
@@ -101,10 +73,19 @@ export class SessionManager {
       }
     });
 
+    codexAppServer.on("exit", () => {
+      for (const channelId of new Set([...this.sessions.keys(), ...this.conversations.keys()])) {
+        this.cancelInputs(channelId);
+        void this.streamState.get(channelId)?.transcript.finish("failed");
+        updateSessionStatus(channelId, "offline");
+      }
+      this.sessions.clear();
+      this.streamState.clear();
+    });
     this.initialized = true;
   }
 
-  async sendMessage(channel: TextChannel, prompt: string): Promise<void> {
+  async sendMessage(channel: TextChannel, prompt: string, imagePaths: string[] = []): Promise<void> {
     await this.ensureInitialized();
 
     const channelId = channel.id;
@@ -146,39 +127,8 @@ export class SessionManager {
 
     upsertSession(dbId, channelId, threadId, "online");
 
-    const stopRow = createStopButton(channelId);
-    const currentMessage = await channel.send({
-      content: L("⏳ Thinking...", "⏳ 생각 중..."),
-      components: [stopRow],
-    });
-
-    const startedAt = Date.now();
-    const heartbeat = setInterval(async () => {
-      const stream = this.streamState.get(channelId);
-      if (!stream || stream.hasTextOutput) return;
-      const elapsed = Math.round((Date.now() - stream.startedAt) / 1000);
-      try {
-        await stream.messages.at(-1)?.edit({
-          content: `⏳ ${stream.lastActivity} (${elapsed}s)`,
-          components: [stream.stopRow],
-        });
-      } catch {
-        // ignore
-      }
-    }, 15_000);
-
-    this.streamState.set(channelId, {
-      buffer: "",
-      messages: [currentMessage],
-      lastEditTime: 0,
-      stopRow,
-      startedAt,
-      lastActivity: L("Thinking...", "생각 중..."),
-      toolUseCount: 0,
-      heartbeat,
-      hasTextOutput: false,
-      lastError: null,
-    });
+    const transcript = new TurnTranscript(channel, getConfig().DISCORD_VERBOSE, project.project_path);
+    this.streamState.set(channelId, { transcript, lastError: null });
 
     this.sessions.set(channelId, {
       channelId,
@@ -189,8 +139,11 @@ export class SessionManager {
     });
 
     try {
-      await codexAppServer.startTurn(threadId, prompt);
+      const turn = await codexAppServer.startTurn(threadId, prompt, imagePaths);
+      const active = this.sessions.get(channelId);
+      if (active?.threadId === threadId && !active.turnId) active.turnId = turn.id;
     } catch (error) {
+      await transcript.finish("failed");
       await channel.send(`❌ ${error instanceof Error ? error.message : "Failed to start Codex turn"}`);
       updateSessionStatus(channelId, "offline");
       this.finishSession(channelId);
@@ -199,9 +152,30 @@ export class SessionManager {
 
   private async handleNotification(msg: { method: string; params?: Record<string, unknown> }): Promise<void> {
     const params = msg.params ?? {};
+    if (msg.method === "serverRequest/resolved") {
+      const id = params.requestId;
+      if (typeof id === "number" || typeof id === "string") {
+        this.requests.delete(id);
+        this.userInput.cancel(`rpc:${id}`);
+        this.approvals.get(String(id))?.resolve("cancel");
+        const question = this.conversationRequests.get(id);
+        if (question && this.conversations.get(question.channelId) === question.token) {
+          this.conversations.delete(question.channelId);
+          this.userInput.cancel(question.scope);
+          if (!this.sessions.has(question.channelId)) {
+            updateSessionStatus(question.channelId, "idle");
+            this.finishSession(question.channelId);
+          }
+        }
+      }
+      return;
+    }
     const threadId = typeof params.threadId === "string" ? params.threadId : null;
     const active = threadId ? this.findActiveByThread(threadId) : undefined;
     if (!active) return;
+    const eventTurn = params.turn as { id?: string } | undefined;
+    const eventTurnId = typeof params.turnId === "string" ? params.turnId : eventTurn?.id;
+    if (eventTurnId && active.turnId && eventTurnId !== active.turnId) return;
 
     const channelId = active.channelId;
     const stream = this.streamState.get(channelId);
@@ -228,42 +202,43 @@ export class SessionManager {
         }
         return;
       }
-      case "item/started": {
-        if (!stream) return;
+      case "item/started":
+      case "item/completed": {
         const item = params.item as Record<string, unknown> | undefined;
-        if (!item || typeof item.type !== "string") return;
-
-        if (item.type !== "userMessage") {
-          stream.toolUseCount++;
-        }
-
-        if (item.type === "commandExecution" && typeof item.command === "string") {
-          const command = item.command.length > 80 ? item.command.slice(0, 80) + "…" : item.command;
-          stream.lastActivity = `${L("Running command", "명령어 실행 중")} \`${command}\``;
-        } else if (item.type === "fileChange") {
-          stream.lastActivity = L("Editing files", "파일 편집 중");
-        } else if (item.type === "webSearch") {
-          stream.lastActivity = L("Searching web", "웹 검색 중");
-        }
-
-        if (!stream.hasTextOutput) {
-          const elapsed = Math.round((Date.now() - stream.startedAt) / 1000);
-          try {
-            await stream.messages.at(-1)?.edit({
-              content: `⏳ ${stream.lastActivity} (${elapsed}s) [${stream.toolUseCount} items]`,
-              components: [stream.stopRow],
-            });
-          } catch {
-            // ignore
+        if (item && typeof item.type === "string") stream?.transcript.recordItem(item, msg.method === "item/completed");
+        if (stream && item?.type === "agentMessage" && msg.method === "item/completed") {
+          stream.lastAssistant = item;
+          if (Array.isArray(item.questions) && item.questions.length && !stream.nativeQuestion && !this.conversations.has(channelId)) {
+            this.startConversation(active, conversationQuestions(item));
           }
         }
         return;
       }
       case "item/agentMessage/delta": {
-        if (!stream || typeof params.delta !== "string") return;
-        stream.buffer += params.delta;
-        stream.hasTextOutput = true;
-        await this.flushStream(channelId);
+        if (typeof params.delta === "string" && typeof params.itemId === "string") stream?.transcript.appendText(params.itemId, params.delta);
+        return;
+      }
+      case "item/reasoning/summaryTextDelta": {
+        if (typeof params.itemId === "string" && typeof params.delta === "string") {
+          stream?.transcript.appendReasoning(params.itemId, typeof params.summaryIndex === "number" ? params.summaryIndex : 0, params.delta);
+        }
+        return;
+      }
+      case "item/commandExecution/outputDelta": {
+        if (typeof params.itemId === "string" && typeof params.delta === "string") stream?.transcript.appendCommandOutput(params.itemId, params.delta);
+        return;
+      }
+      case "turn/plan/updated": {
+        stream?.transcript.updatePlan(params.plan);
+        return;
+      }
+      case "rawResponseItem/completed": {
+        const item = params.item as Record<string, unknown> | undefined;
+        if (item?.type === "image_generation_call") stream?.transcript.recordItem(item, true);
+        return;
+      }
+      case "turn/diff/updated": {
+        if (typeof params.diff === "string") stream?.transcript.recordDiff(params.diff);
         return;
       }
       case "error": {
@@ -290,67 +265,93 @@ export class SessionManager {
               ? `${turn.error.message ?? "Turn failed"}\n${turn.error.additionalDetails}`
               : turn?.error?.message ?? stream?.lastError ?? "Turn failed";
           if (stream) {
-            await stream.messages.at(-1)?.edit({ content: `❌ ${message}`, components: [] }).catch(() => {});
+            await stream.transcript.finish("failed");
           }
+          await active.channel.send({ content: `❌ ${message}`.slice(0, 2000), allowedMentions: { parse: [] } }).catch(() => {});
+          this.cancelInputs(channelId);
           updateSessionStatus(channelId, "offline");
           this.finishSession(channelId);
           return;
         }
 
         if (stream) {
-          await this.flushStream(channelId, true);
-          const durationMs = Date.now() - stream.startedAt;
-          const payload: MessageCreateOptions = {
-            embeds: [createResultEmbed(L("Task completed", "작업 완료"), 0, durationMs, getConfig().SHOW_COST)],
-          };
-          await active.channel.send(payload).catch(() => {});
+          await stream.transcript.finish(statusType === "interrupted" ? "interrupted" : "completed");
         }
 
-        updateSessionStatus(channelId, "idle");
+        const questions = statusType === "completed" && stream?.lastAssistant && !stream.nativeQuestion
+          ? conversationQuestions(stream.lastAssistant) : [];
+        if (questions.length && !this.conversations.has(channelId)) this.startConversation(active, questions);
+        updateSessionStatus(channelId, this.conversations.has(channelId) ? "waiting" : "idle");
         this.finishSession(channelId);
       }
     }
   }
 
-  private async handleServerRequest(msg: { id: number; method: string; params: Record<string, unknown> }): Promise<void> {
-    const threadId =
-      typeof msg.params.threadId === "string"
-        ? msg.params.threadId
-        : typeof msg.params.conversationId === "string"
-          ? msg.params.conversationId
-          : null;
-    const active = threadId ? this.findActiveByThread(threadId) : undefined;
-
+  private async handleServerRequest(msg: { id: RequestId; method: string; params: Record<string, unknown> }): Promise<void> {
+    const threadId = typeof msg.params.threadId === "string" ? msg.params.threadId : msg.params.conversationId;
+    const active = typeof threadId === "string" ? this.findActiveByThread(threadId) : undefined;
     if (!active) {
-      await codexAppServer.respond(msg.id, { decision: "decline" });
+      await codexAppServer.respond(msg.id, this.approvalResponse(msg.method, msg.params, "cancel"));
       return;
     }
-
+    this.requests.set(msg.id, active.channelId);
+    const stream = this.streamState.get(active.channelId);
+    await stream?.transcript.flushNow();
+    if (!this.requests.has(msg.id)) return;
     if (msg.method === "item/tool/requestUserInput") {
-      const answers = await this.askUserInput(
-        active.channel,
-        active.channelId,
-        msg.id,
-        (msg.params.questions as QuestionPayload[]) ?? [],
-      );
-      await codexAppServer.respond(msg.id, { answers });
+      if (stream) stream.nativeQuestion = true;
+      const questions = (msg.params.questions as QuestionPayload[]) ?? [];
+      if (msg.params.isBlocking === false) {
+        this.startConversation(active, questions, msg.id);
+        return;
+      }
+      try {
+        const answers: Record<string, { answers: string[] }> = {};
+        for (let index = 0; index < questions.length && this.requests.has(msg.id); index++) {
+          updateSessionStatus(active.channelId, "waiting");
+          const answer = await this.userInput.ask(active.channel, `rpc:${msg.id}`, questions[index], index, questions.length);
+          if (answer === null) return;
+          answers[questions[index].id] = { answers: answer };
+        }
+        if (this.requests.has(msg.id)) await codexAppServer.respond(msg.id, { answers });
+      } finally {
+        this.requests.delete(msg.id);
+        if (this.sessions.has(active.channelId)) updateSessionStatus(active.channelId, "online");
+      }
       return;
     }
+    try {
+      const supported = ["item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/permissions/requestApproval"];
+      if (!supported.includes(msg.method)) {
+        await active.channel.send({ content: `Codex requested an unsupported interactive form (${msg.method}); the request was cancelled.`, allowedMentions: { parse: [] } });
+        await codexAppServer.respond(msg.id, this.approvalResponse(msg.method, msg.params, "cancel"));
+        return;
+      }
+      const auto = getProject(active.channelId)?.auto_approve && msg.method !== "item/permissions/requestApproval";
+      const decision = auto ? "acceptForSession" : await this.requestApproval(active.channel, active.channelId, msg.id, msg.method, msg.params);
+      if (this.requests.has(msg.id)) await codexAppServer.respond(msg.id, this.approvalResponse(msg.method, msg.params, decision));
+    } catch (error) {
+      console.warn("Could not display Codex approval:", error instanceof Error ? error.message : error);
+      if (this.requests.has(msg.id)) await codexAppServer.respond(msg.id, this.approvalResponse(msg.method, msg.params, "cancel"));
+    } finally { this.requests.delete(msg.id); }
+  }
 
-    const project = getProject(active.channelId);
-    if (project?.auto_approve) {
-      await codexAppServer.respond(msg.id, { decision: "acceptForSession" });
-      return;
+  private approvalResponse(method: string, params: Record<string, unknown>, decision: ApprovalDecision): Record<string, unknown> {
+    if (method === "item/tool/requestUserInput") return { answers: {} };
+    if (method === "mcpServer/elicitation/request") return { action: "cancel", content: null, _meta: null };
+    if (method === "item/permissions/requestApproval") {
+      const requested = (params.permissions ?? {}) as Record<string, unknown>;
+      const granted = decision === "accept" || decision === "acceptForSession"
+        ? Object.fromEntries(Object.entries(requested).filter(([key, value]) => ["network", "fileSystem"].includes(key) && value != null)) : {};
+      return { permissions: granted, scope: "turn" };
     }
-
-    const decision = await this.requestApproval(active.channel, active.channelId, msg.id, msg.method, msg.params);
-    await codexAppServer.respond(msg.id, { decision });
+    return { decision };
   }
 
   private async requestApproval(
     channel: TextChannel,
     channelId: string,
-    requestId: number,
+    requestId: RequestId,
     method: string,
     params: Record<string, unknown>,
   ): Promise<ApprovalDecision> {
@@ -374,109 +375,80 @@ export class SessionManager {
         : params;
 
     const { embed, row } = createToolApprovalEmbed(toolName, input as Record<string, unknown>, String(requestId));
+    const allowSession = method !== "item/permissions/requestApproval";
+    if (!allowSession) row.setComponents(row.components.filter((_, index) => index !== 2));
     updateSessionStatus(channelId, "waiting");
-    await channel.send({ embeds: [embed], components: [row] });
-
-    return new Promise((resolve) => {
-      const timeout = setTimeout(() => {
-        pendingApprovals.delete(requestId);
-        updateSessionStatus(channelId, "online");
-        resolve("cancel");
-      }, 5 * 60 * 1000);
-
-      pendingApprovals.set(requestId, {
-        channelId,
-        resolve: (decision) => {
-          clearTimeout(timeout);
-          pendingApprovals.delete(requestId);
-          updateSessionStatus(channelId, "online");
-          resolve(decision);
-        },
-      });
+    return new Promise((resolve, reject) => {
+      let message: Awaited<ReturnType<TextChannel["send"]>> | undefined;
+      const key = String(requestId);
+      const timeout = setTimeout(() => this.approvals.get(key)?.resolve("cancel"), 5 * 60 * 1000);
+      this.approvals.set(key, { channelId, allowSession, resolve: (decision) => {
+        if (!this.approvals.delete(key)) return;
+        clearTimeout(timeout);
+        void message?.edit({ components: [] }).catch(() => {});
+        if (this.requests.has(requestId)) updateSessionStatus(channelId, "online");
+        resolve(decision);
+      } });
+      void channel.send({ embeds: [embed], components: [row], allowedMentions: { parse: [] } }).then((sent) => {
+        message = sent;
+        if (!this.approvals.has(key)) void sent.edit({ components: [] }).catch(() => {});
+      }).catch((error) => { clearTimeout(timeout); this.approvals.delete(key); reject(error); });
     });
   }
 
-  private async askUserInput(
-    channel: TextChannel,
-    channelId: string,
-    requestId: number,
-    questions: QuestionPayload[],
-  ): Promise<Record<string, { answers: string[] }>> {
-    const answers: Record<string, { answers: string[] }> = {};
-
-    for (let index = 0; index < questions.length; index++) {
-      const question = questions[index];
-      const { embed, components } = createAskUserQuestionEmbed(
-        {
-          header: question.header,
-          question: question.question,
-          options: question.options ?? [],
-          multiSelect: false,
-        },
-        String(requestId),
-        index,
-        questions.length,
-      );
-
-      updateSessionStatus(channelId, "waiting");
-      await channel.send({ embeds: [embed], components });
-
-      const answer = await new Promise<Record<string, { answers: string[] }>>((resolve) => {
-        const timeout = setTimeout(() => {
-          pendingQuestions.delete(requestId);
-          pendingCustomInputs.delete(channelId);
-          resolve({ [question.id]: { answers: [] } });
-        }, 5 * 60 * 1000);
-
-        pendingQuestions.set(requestId, {
-          channelId,
-          questionId: question.id,
-          resolve: (value) => {
-            clearTimeout(timeout);
-            pendingQuestions.delete(requestId);
-            resolve(value);
-          },
-        });
-      });
-
-      answers[question.id] = answer[question.id] ?? { answers: [] };
-    }
-
-    updateSessionStatus(channelId, "online");
-    return answers;
+  private startConversation(active: ActiveSession, questions: QuestionPayload[], requestId?: RequestId): void {
+    if (!questions.length || this.conversations.has(active.channelId)) return;
+    const token = Symbol("question");
+    const scope = `conversation:${randomUUID()}`;
+    this.conversations.set(active.channelId, token);
+    if (requestId !== undefined) this.conversationRequests.set(requestId, { channelId: active.channelId, token, scope });
+    const run = async () => {
+      await this.streamState.get(active.channelId)?.transcript.flushNow();
+      const answers: Record<string, { answers: string[] }> = {};
+      const text: string[] = [];
+      for (let index = 0; index < questions.length; index++) {
+        if (this.conversations.get(active.channelId) !== token) return;
+        const answer = await this.userInput.ask(active.channel, scope, questions[index], index, questions.length);
+        if (answer === null || this.conversations.get(active.channelId) !== token) return;
+        answers[questions[index].id] = { answers: answer };
+        const choices = questions[index].options?.map((option) => `- ${option.label}`).join("\n");
+        text.push(`${questions[index].question}${choices ? `\n${choices}` : ""}\nMy answer: ${answer.join(", ")}`);
+      }
+      this.conversations.delete(active.channelId);
+      if (requestId !== undefined && this.requests.has(requestId)) {
+        await codexAppServer.respond(requestId, { answers });
+        this.requests.delete(requestId);
+      } else if (!(await this.steerMessage(active.channelId, text.join("\n\n")))) {
+        this.sessions.set(active.channelId, { ...active, turnId: null });
+        await this.sendMessage(active.channel, text.join("\n\n"));
+      }
+    };
+    void run().catch((error) => {
+      console.error("Codex question delivery error:", error);
+      void active.channel.send("Could not deliver your answer to Codex. Please send it again.").catch(() => {});
+    }).finally(() => {
+      if (requestId !== undefined && this.conversationRequests.get(requestId)?.token === token) this.conversationRequests.delete(requestId);
+      if (this.conversations.get(active.channelId) === token) this.conversations.delete(active.channelId);
+      this.userInput.cancel(scope);
+    });
   }
 
-  private async flushStream(channelId: string, final = false): Promise<void> {
-    const stream = this.streamState.get(channelId);
+  async steerMessage(channelId: string, prompt: string, imagePaths: string[] = []): Promise<boolean> {
     const active = this.sessions.get(channelId);
-    if (!stream || !active || stream.buffer.length === 0) return;
+    if (!active?.turnId) return false;
+    await codexAppServer.steerTurn(active.threadId, active.turnId, prompt, imagePaths);
+    return true;
+  }
 
-    const now = Date.now();
-    if (!final && now - stream.lastEditTime < 1500) return;
-    stream.lastEditTime = now;
-
-    const chunks = splitMessage(stream.buffer);
-    try {
-      for (let i = 0; i < chunks.length; i++) {
-        const isLastChunk = i === chunks.length - 1;
-        const payload = {
-          content: chunks[i] || "...",
-          components: isLastChunk
-            ? final
-              ? [createCompletedButton()]
-              : [stream.stopRow]
-            : [],
-        };
-
-        const existingMessage = stream.messages[i];
-        if (existingMessage) {
-          await existingMessage.edit(payload);
-        } else {
-          stream.messages.push(await active.channel.send(payload));
-        }
-      }
-    } catch {
-      // ignore
+  private cancelInputs(channelId: string, conversations = true): void {
+    for (const [id, channel] of this.requests) if (channel === channelId) {
+      this.requests.delete(id);
+      this.userInput.cancel(`rpc:${id}`);
+      this.approvals.get(String(id))?.resolve("cancel");
+    }
+    if (conversations) {
+      this.conversations.delete(channelId);
+      this.userInput.cancelChannel(channelId);
     }
   }
 
@@ -486,7 +458,13 @@ export class SessionManager {
 
   async stopSession(channelId: string): Promise<boolean> {
     const session = this.sessions.get(channelId);
-    if (!session || !session.turnId) return false;
+    if (!session || !session.turnId) {
+      if (!this.conversations.has(channelId)) return false;
+      this.cancelInputs(channelId);
+      updateSessionStatus(channelId, "idle");
+      return true;
+    }
+    this.cancelInputs(channelId);
 
     try {
       await codexAppServer.interruptTurn(session.threadId, session.turnId);
@@ -495,19 +473,17 @@ export class SessionManager {
     }
 
     updateSessionStatus(channelId, "offline");
+    await this.streamState.get(channelId)?.transcript.finish("interrupted");
     this.finishSession(channelId);
     return true;
   }
 
   private finishSession(channelId: string): void {
-    const stream = this.streamState.get(channelId);
-    if (stream) {
-      clearInterval(stream.heartbeat);
-      this.streamState.delete(channelId);
-    }
+    this.cancelInputs(channelId, false);
+    this.streamState.delete(channelId);
 
     this.sessions.delete(channelId);
-    pendingCustomInputs.delete(channelId);
+    if (this.conversations.has(channelId)) return;
 
     const queue = this.messageQueue.get(channelId);
     if (queue && queue.length > 0) {
@@ -526,15 +502,15 @@ export class SessionManager {
   }
 
   isActive(channelId: string): boolean {
-    return this.sessions.has(channelId);
+    return this.sessions.has(channelId) || this.conversations.has(channelId);
   }
 
-  resolveApproval(requestId: string, decision: "approve" | "deny" | "approve-all"): boolean {
-    const id = Number(requestId);
-    const pending = pendingApprovals.get(id);
-    if (!pending) return false;
+  resolveApproval(requestId: string, decision: "approve" | "deny" | "approve-all", channelId: string): boolean {
+    const pending = this.approvals.get(requestId);
+    if (!pending || pending.channelId !== channelId) return false;
 
     if (decision === "approve-all") {
+      if (!pending.allowSession) return false;
       setAutoApprove(pending.channelId, true);
       pending.resolve("acceptForSession");
     } else if (decision === "approve") {
@@ -546,32 +522,13 @@ export class SessionManager {
     return true;
   }
 
-  resolveQuestion(requestId: string, answer: string): boolean {
-    const id = Number(requestId);
-    const pending = pendingQuestions.get(id);
-    if (!pending) return false;
-    pending.resolve({ [pending.questionId]: { answers: [answer] } });
-    return true;
+  resolveQuestion(token: string, indices: string[], channelId: string): string[] | null {
+    return this.userInput.select(token, indices, channelId);
   }
 
-  enableCustomInput(requestId: string, channelId: string, questionId = "answer"): void {
-    pendingCustomInputs.set(channelId, { requestId: Number(requestId), questionId });
-  }
-
-  resolveCustomInput(channelId: string, text: string): boolean {
-    const ci = pendingCustomInputs.get(channelId);
-    if (!ci) return false;
-    pendingCustomInputs.delete(channelId);
-
-    const pending = pendingQuestions.get(ci.requestId);
-    if (!pending) return false;
-    pending.resolve({ [ci.questionId]: { answers: [text] } });
-    return true;
-  }
-
-  hasPendingCustomInput(channelId: string): boolean {
-    return pendingCustomInputs.has(channelId);
-  }
+  enableCustomInput(token: string, channelId: string): boolean { return this.userInput.has(token, channelId); }
+  resolveCustomInput(channelId: string, text: string): boolean { return this.userInput.reply(channelId, text); }
+  hasPendingCustomInput(channelId: string): boolean { return this.userInput.hasChannel(channelId); }
 
   setPendingQueue(channelId: string, channel: TextChannel, prompt: string): void {
     this.pendingQueuePrompts.set(channelId, { channel, prompt });

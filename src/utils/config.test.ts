@@ -13,6 +13,7 @@ describe("config", () => {
     // Clear optional vars to use defaults
     delete process.env.RATE_LIMIT_PER_MINUTE;
     delete process.env.SHOW_COST;
+    delete process.env.DISCORD_VERBOSE;
   });
 
   afterEach(() => {
@@ -33,6 +34,7 @@ describe("config", () => {
     const config = loadConfig();
     expect(config.RATE_LIMIT_PER_MINUTE).toBe(10);
     expect(config.SHOW_COST).toBe(true);
+    expect(config.DISCORD_VERBOSE).toBe(false);
   });
 
   it("parses ALLOWED_USER_IDS with spaces", async () => {

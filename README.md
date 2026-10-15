@@ -40,10 +40,10 @@ Because it reads local Codex thread storage under `~/.codex`, threads created in
 - Resume existing Codex threads from local `~/.codex` state
 - Works with threads created by this bot and with VS Code Codex threads for the same project path
 - Discord approval UI for tool calls and file changes
-- Interactive user-input questions from Codex surfaced in Discord
-- Stop active turns from a button or `/stop`
-- Queue follow-up prompts while a task is already running
-- Attachment support for images and files
+- Decision cards with selectable choices or typed replies; a five-minute fallback asks Codex to choose from context and continue
+- Complete commentary and final answers, interleaved with thinking summaries, compact activity summaries, file edits, searches and plans
+- Send feedback to the active Codex turn; use `/stop` to interrupt it
+- Attachment support for incoming images/files, reviewed/generated images and turn diffs
 - Codex usage snapshot from Discord with `/usage`
 - Desktop control panels on Linux and Windows can also show the same cached Codex usage snapshot
 - SQLite-backed project/session mapping
@@ -70,6 +70,11 @@ Because it reads local Codex thread storage under `~/.codex`, threads created in
 - When a message arrives, it starts or resumes a Codex thread for that project.
 - `/sessions` reads local Codex thread metadata and lets you resume an existing thread.
 - Assistant output is streamed back into Discord and split safely for long messages and code blocks.
+- Completed message text reconciles streamed drafts, including short bursts that previously left a single character visible.
+- Ordinary replies reach the running turn immediately. When a decision card is pending, a typed reply answers that question instead. Tool permission approvals remain separate and expire by cancellation.
+- Native blocking questions wait for a response. Optional questions allow Codex to continue independent work. When only plain prose is available, explicit trailing choice lists become cards after the turn ends. The bot also asks Codex to end its turn when a required decision cannot use structured input.
+- Images explicitly exposed by Codex are uploaded once per turn, up to 8 MiB each. Local images must be inside the project or `~/.codex/generated_images`; missing or unsupported images produce a notice. Activity is compact by default. Set `DISCORD_VERBOSE=true` to include command text and bounded output tails; the latest turn diff is attached at completion.
+- Thinking summaries depend on what the installed Codex app-server exposes. Arbitrary MCP interactive forms are currently cancelled with a notice. This interface does not reproduce every VS Code feature.
 
 ## Requirements
 
@@ -129,7 +134,7 @@ DISCORD_GUILD_ID=...
 ALLOWED_USER_IDS=123456789012345678
 BASE_PROJECT_DIR=/Users/you/projects
 RATE_LIMIT_PER_MINUTE=10
-SHOW_COST=false
+DISCORD_VERBOSE=false
 ```
 
 Do not add `OPENAI_API_KEY` to `.env` for normal use. This project uses your local `codex login` session instead.

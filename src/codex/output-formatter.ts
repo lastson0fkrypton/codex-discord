@@ -114,10 +114,10 @@ export function createToolApprovalEmbed(
     const command = (input.command as string) ?? "unknown";
     const description = (input.description as string) ?? "";
     embed.addFields(
-      { name: L("Command", "명령어"), value: `\`\`\`bash\n${command}\n\`\`\``, inline: false },
+      { name: L("Command", "명령어"), value: `\`\`\`bash\n${command.slice(0, 950)}\n\`\`\``, inline: false },
     );
     if (description) {
-      embed.addFields({ name: L("Description", "설명"), value: description, inline: false });
+      embed.addFields({ name: L("Description", "설명"), value: description.slice(0, 1024), inline: false });
     }
   } else {
     // Generic tool display - skip empty input
@@ -171,32 +171,32 @@ export function createAskUserQuestionEmbed(
       : `❓ ${questionData.header}`;
 
   const embed = new EmbedBuilder()
-    .setTitle(title)
-    .setDescription(questionData.question)
+    .setTitle(title.slice(0, 256))
+    .setDescription(questionData.question.slice(0, 2000) || "?")
     .setColor(0x7c3aed)
     .setTimestamp();
 
   // Add option descriptions as embed fields
-  for (const opt of questionData.options) {
+  for (const opt of questionData.options.slice(0, 8)) {
     embed.addFields({
-      name: opt.label,
-      value: opt.description || "\u200b",
+      name: opt.label.slice(0, 100) || "?",
+      value: opt.description?.slice(0, 300) || "\u200b",
       inline: false,
     });
   }
 
   const components: ActionRowBuilder<any>[] = [];
 
-  if (questionData.multiSelect) {
+  if (questionData.options.length && (questionData.multiSelect || questionData.options.length > 20)) {
     // Use StringSelectMenu for multi-select
     const selectMenu = new StringSelectMenuBuilder()
       .setCustomId(`ask-select:${requestId}`)
       .setPlaceholder(L("Select options...", "옵션을 선택하세요..."))
       .setMinValues(1)
-      .setMaxValues(questionData.options.length)
+      .setMaxValues(questionData.multiSelect ? Math.min(questionData.options.length, 25) : 1)
       .addOptions(
-        questionData.options.map((opt, i) => ({
-          label: opt.label.slice(0, 100),
+        questionData.options.slice(0, 25).map((opt, i) => ({
+          label: opt.label.slice(0, 100) || "?",
           value: String(i),
           ...(opt.description
             ? { description: opt.description.slice(0, 100) }
@@ -223,7 +223,7 @@ export function createAskUserQuestionEmbed(
     const buttons: ButtonBuilder[] = questionData.options.map((opt, i) =>
       new ButtonBuilder()
         .setCustomId(`ask-opt:${requestId}:${i}`)
-        .setLabel(opt.label.slice(0, 80))
+        .setLabel(opt.label.slice(0, 80) || "?")
         .setStyle(i === 0 ? ButtonStyle.Primary : ButtonStyle.Secondary),
     );
 
