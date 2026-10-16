@@ -1498,15 +1498,17 @@ class CodexBotTray : Form
             new string[] { "ALLOWED_USER_IDS", L("Allowed User IDs (comma-separated)", "허용된 사용자 ID (쉼표로 구분)") },
             new string[] { "BASE_PROJECT_DIR", L("Base Project Directory", "기본 프로젝트 디렉토리") },
             new string[] { "RATE_LIMIT_PER_MINUTE", L("Rate Limit Per Minute", "분당 요청 제한") },
+            new string[] { "DISCORD_CHANNEL_ID", L("Discord Channel ID (optional)", "Discord 채널 ID (선택 사항)") },
         };
 
-        string[] defaults = new string[] { "", "", "", "", "10" };
+        string[] defaults = new string[] { "", "", "", "", "10", "" };
         string[] placeholders = new string[] {
             L("Paste your bot token here", "봇 토큰을 여기에 붙여넣으세요"),
             L("Right-click server > Copy Server ID", "서버 우클릭 > 서버 ID 복사"),
             L("e.g. 123456789,987654321", "예: 123456789,987654321"),
             L("e.g. C:\\Users\\you\\projects", "예: C:\\Users\\you\\projects"),
-            "10"
+            "10",
+            L("Copy Channel ID; blank allows multiple channels", "채널 ID 복사; 비워두면 여러 채널 허용")
         };
         // Placeholder values from .env.example that should be treated as empty
         var exampleValues = new System.Collections.Generic.HashSet<string>() {

@@ -10,7 +10,7 @@ import {
 import { getConfig } from "../utils/config.js";
 import { handleMessage } from "./handlers/message.js";
 import { handleButtonInteraction, handleSelectMenuInteraction } from "./handlers/interaction.js";
-import { isAllowedUser } from "../security/guard.js";
+import { isAllowedChannel, isAllowedUser } from "../security/guard.js";
 import { L } from "../utils/i18n.js";
 import * as registerCmd from "./commands/register.js";
 import * as unregisterCmd from "./commands/unregister.js";
@@ -64,6 +64,18 @@ export async function startBot(): Promise<Client> {
 
   client.on("interactionCreate", async (interaction: Interaction) => {
     try {
+      if (!isAllowedChannel(interaction.channelId, interaction.guildId)) {
+        if (interaction.isAutocomplete()) {
+          await interaction.respond([]);
+        } else if (interaction.isRepliable()) {
+          await interaction.reply({
+            content: L("This bot is restricted to its configured channel.", "이 봇은 설정된 채널에서만 사용할 수 있습니다."),
+            flags: ["Ephemeral"],
+          });
+        }
+        return;
+      }
+
       if (interaction.isAutocomplete()) {
         const command = commandMap.get(interaction.commandName);
         if (command && "autocomplete" in command) {

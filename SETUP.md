@@ -175,6 +175,7 @@ Fill it in:
 ```env
 DISCORD_BOT_TOKEN=your_bot_token
 DISCORD_GUILD_ID=your_server_id
+DISCORD_CHANNEL_ID=
 ALLOWED_USER_IDS=your_user_id
 BASE_PROJECT_DIR=/Users/you/projects
 RATE_LIMIT_PER_MINUTE=10
@@ -187,6 +188,7 @@ SHOW_COST=false
 |---|---|
 | `DISCORD_BOT_TOKEN` | Bot token from Discord Developer Portal |
 | `DISCORD_GUILD_ID` | Discord server ID |
+| `DISCORD_CHANNEL_ID` | Optional numeric channel ID. When set, only this exact channel can control the bot, including for admins; threads are excluded. Leave blank for multiple project channels. Restart after changing it. |
 | `ALLOWED_USER_IDS` | Comma-separated list of users allowed to control the bot |
 | `BASE_PROJECT_DIR` | Root directory the bot is allowed to register projects under |
 | `RATE_LIMIT_PER_MINUTE` | Per-user Discord prompt limit |

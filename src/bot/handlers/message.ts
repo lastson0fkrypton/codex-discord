@@ -1,6 +1,6 @@
 import { Message, TextChannel, Attachment, ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
 import { getProject } from "../../db/database.js";
-import { isAllowedUser, checkRateLimit } from "../../security/guard.js";
+import { isAllowedChannel, isAllowedUser, checkRateLimit } from "../../security/guard.js";
 import { sessionManager } from "../../codex/session-manager.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -57,6 +57,7 @@ async function downloadAttachment(
 
 export async function handleMessage(message: Message): Promise<void> {
   if (message.author.bot || !message.guild) return;
+  if (!isAllowedChannel(message.channelId, message.guildId)) return;
 
   const project = getProject(message.channelId);
   if (!project) return;
