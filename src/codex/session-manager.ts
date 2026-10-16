@@ -6,6 +6,7 @@ import {
   getProject,
   getSession,
   setAutoApprove,
+  setAutoDecision as saveAutoDecision,
 } from "../db/database.js";
 import { getConfig } from "../utils/config.js";
 import { L } from "../utils/i18n.js";
@@ -39,7 +40,7 @@ type Approval = { channelId: string; allowSession: boolean; resolve: (decision: 
 export class SessionManager {
   private sessions = new Map<string, ActiveSession>();
   private initialized = false;
-  private userInput = new UserInput();
+  private userInput = new UserInput((channelId) => Boolean(getProject(channelId)?.auto_decision));
   private approvals = new Map<string, Approval>();
   private requests = new Map<RequestId, string>();
   private conversations = new Map<string, symbol>();
@@ -524,6 +525,11 @@ export class SessionManager {
 
   resolveQuestion(token: string, indices: string[], channelId: string): string[] | null {
     return this.userInput.select(token, indices, channelId);
+  }
+
+  setAutoDecision(channelId: string, enabled: boolean): void {
+    saveAutoDecision(channelId, enabled);
+    this.userInput.setAutoDecision(channelId, enabled);
   }
 
   enableCustomInput(token: string, channelId: string): boolean { return this.userInput.has(token, channelId); }

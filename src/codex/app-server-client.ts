@@ -77,7 +77,7 @@ function shouldUseShell(command: string): boolean {
 
 const DISCORD_INSTRUCTIONS = "The user is interacting through Discord. Use structured user-input questions when you need a decision. " +
   "If a decision is required before continuing, ask a blocking question and wait. If that tool is unavailable, end the turn with your question and a short bullet list of choices. " +
-  "The client may provide an authorized five-minute fallback instructing you to choose the most likely answer from context and continue; explain the choice you make.";
+  "Wait for the user's answer; elapsed time alone does not authorize a decision. Only when the client explicitly provides an authorized five-minute fallback may you choose the most likely answer from context and continue; explain the choice you make.";
 
 export class CodexAppServerClient extends EventEmitter {
   private static readonly REQUEST_TIMEOUT_MS = 15_000;

@@ -33,7 +33,7 @@ vi.mock("./handlers/interaction.js", () => ({
 let startBot: typeof import("./client.js").startBot;
 
 beforeAll(async () => {
-  for (const name of ["register", "unregister", "status", "stop", "auto-approve", "sessions", "clear-sessions", "last", "queue", "usage"]) {
+  for (const name of ["register", "unregister", "status", "stop", "auto-approve", "autodecision", "sessions", "clear-sessions", "last", "queue", "usage"]) {
     vi.doMock(`./commands/${name}.js`, () => ({
       data: { name },
       execute: mocks.execute,

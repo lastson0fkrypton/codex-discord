@@ -40,7 +40,7 @@ Because it reads local Codex thread storage under `~/.codex`, threads created in
 - Resume existing Codex threads from local `~/.codex` state
 - Works with threads created by this bot and with VS Code Codex threads for the same project path
 - Discord approval UI for tool calls and file changes
-- Decision cards with selectable choices or typed replies; a five-minute fallback asks Codex to choose from context and continue
+- Decision cards with selectable choices or typed replies; optional five-minute auto-decisions controlled with `/autodecision` (off by default)
 - Complete commentary and final answers, interleaved with thinking summaries, compact activity summaries, file edits, searches and plans
 - Send feedback to the active Codex turn; use `/stop` to interrupt it
 - Attachment support for incoming images/files, reviewed/generated images and turn diffs
@@ -72,6 +72,7 @@ Because it reads local Codex thread storage under `~/.codex`, threads created in
 - Assistant output is streamed back into Discord and split safely for long messages and code blocks.
 - Completed message text reconciles streamed drafts, including short bursts that previously left a single character visible.
 - Ordinary replies reach the running turn immediately. When a decision card is pending, a typed reply answers that question instead. Tool permission approvals remain separate and expire by cancellation.
+- `/autodecision off` makes unanswered decisions wait indefinitely; `/autodecision on` enables a five-minute fallback asking Codex to choose from context. The setting is saved per channel. Turning it off cancels existing decision timers immediately; enabling it starts a fresh five minutes for pending questions. Tool permission approvals still expire by cancellation.
 - Native blocking questions wait for a response. Optional questions allow Codex to continue independent work. When only plain prose is available, explicit trailing choice lists become cards after the turn ends. The bot also asks Codex to end its turn when a required decision cannot use structured input.
 - Images explicitly exposed by Codex are uploaded once per turn, up to 8 MiB each. Local images must be inside the project or `~/.codex/generated_images`; missing or unsupported images produce a notice. Activity is compact by default. Set `DISCORD_VERBOSE=true` to include command text and bounded output tails; the latest turn diff is attached at completion.
 - Thinking summaries depend on what the installed Codex app-server exposes. Arbitrary MCP interactive forms are currently cancelled with a notice. This interface does not reproduce every VS Code feature.
@@ -188,6 +189,7 @@ For setup screenshots and the full step-by-step install guide, see [SETUP.md](SE
 | `/status` | Show registered project status across the server |
 | `/stop` | Interrupt the current Codex turn in this channel |
 | `/auto-approve on\|off` | Toggle approval bypass for the current channel |
+| `/autodecision on\|off` | Toggle five-minute automatic decision answers, including pending questions (default: off) |
 | `/sessions` | List and resume existing local Codex sessions for the project |
 | `/last` | Show the last assistant response from the current session |
 | `/usage` | Show Codex rate-limit usage from your local account |

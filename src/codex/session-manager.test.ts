@@ -4,11 +4,11 @@ import { codexAppServer } from "./app-server-client.js";
 import { SessionManager } from "./session-manager.js";
 import { AUTOMATIC_ANSWER } from "./user-input.js";
 import fixture from "./fixtures/conversation.json";
-import { getSession, updateSessionStatus } from "../db/database.js";
+import { getProject, getSession, setAutoDecision, updateSessionStatus } from "../db/database.js";
 
 vi.mock("../db/database.js", () => ({
-  getProject: vi.fn(() => ({ project_path: process.cwd(), auto_approve: false })),
-  getSession: vi.fn(), upsertSession: vi.fn(), updateSessionStatus: vi.fn(), setAutoApprove: vi.fn(),
+  getProject: vi.fn(() => ({ project_path: process.cwd(), auto_approve: false, auto_decision: 0 })),
+  getSession: vi.fn(), upsertSession: vi.fn(), updateSessionStatus: vi.fn(), setAutoApprove: vi.fn(), setAutoDecision: vi.fn(),
 }));
 vi.mock("../utils/config.js", () => ({ getConfig: () => ({ DISCORD_VERBOSE: true }) }));
 vi.mock("../utils/i18n.js", () => ({ L: (en: string) => en }));
@@ -46,6 +46,8 @@ describe("Discord conversation protocol replay", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.mocked(getSession).mockReturnValue(undefined);
+    vi.mocked(getProject).mockReturnValue({ project_path: process.cwd(), auto_approve: 0, auto_decision: 0 } as NonNullable<ReturnType<typeof getProject>>);
+    vi.mocked(setAutoDecision).mockImplementation((_, enabled) => { vi.mocked(getProject).mockReturnValue({ ...getProject("channel")!, auto_decision: enabled ? 1 : 0 }); });
     codexAppServer.removeAllListeners();
     vi.spyOn(codexAppServer, "ensureStarted").mockResolvedValue(undefined);
     vi.spyOn(codexAppServer, "startThread").mockResolvedValue({ id: "thread-1" } as Awaited<ReturnType<typeof codexAppServer.startThread>>);
@@ -109,6 +111,7 @@ describe("Discord conversation protocol replay", () => {
   });
 
   it("uses the authorized five-minute fallback instead of an empty answer", async () => {
+    manager.setAutoDecision("channel", true);
     const { channel, messages } = sink();
     await manager.sendMessage(channel, "plan");
     await feed("item/tool/requestUserInput", { questions: [question] }, 41);
@@ -116,6 +119,25 @@ describe("Discord conversation protocol replay", () => {
     expect(codexAppServer.respond).toHaveBeenCalledWith(41, { answers: { release: { answers: [AUTOMATIC_ANSWER] } } });
     expect(messages.at(-1)?.content).toContain("five minutes");
     expect(messages.at(-1)?.components).toEqual([]);
+    await manager.stopSession("channel");
+  });
+
+  it("applies the live setting to pending native questions and persists it", async () => {
+    const { channel, messages } = sink();
+    await manager.sendMessage(channel, "plan");
+    await feed("item/tool/requestUserInput", { questions: [question], isBlocking: true }, 99);
+    await vi.advanceTimersByTimeAsync(600000);
+    expect(codexAppServer.respond).not.toHaveBeenCalled();
+    manager.setAutoDecision("channel", true);
+    await vi.advanceTimersByTimeAsync(299999);
+    manager.setAutoDecision("channel", false);
+    await vi.advanceTimersByTimeAsync(600000);
+    expect(codexAppServer.respond).not.toHaveBeenCalled();
+    expect(setAutoDecision).toHaveBeenLastCalledWith("channel", false);
+    expect(messages.at(-1)?.content).toContain("Auto-decision is OFF");
+    manager.resolveCustomInput("channel", "A human answer");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(codexAppServer.respond).toHaveBeenCalledWith(99, { answers: { release: { answers: ["A human answer"] } } });
     await manager.stopSession("channel");
   });
 
