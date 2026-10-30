@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
+const migration = vi.hoisted(() => ({ legacy: false }));
+
 // Mock better-sqlite3 to always use :memory:
 vi.mock("better-sqlite3", async () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -7,7 +9,13 @@ vi.mock("better-sqlite3", async () => {
   const RealDatabase = actual.default;
   return {
     default: function MemoryDatabase(_path: string, options?: object) {
-      return new RealDatabase(":memory:", options);
+      const memory = new RealDatabase(":memory:", options);
+      if (migration.legacy) memory.exec(`CREATE TABLE projects (
+        channel_id TEXT PRIMARY KEY, project_path TEXT NOT NULL, guild_id TEXT NOT NULL,
+        auto_approve INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now'))
+      ); INSERT INTO projects (channel_id, project_path, guild_id, auto_approve)
+        VALUES ('legacy', '/old/project', 'old-guild', 1);`);
+      return memory;
     },
   };
 });
@@ -19,6 +27,7 @@ import {
   getProject,
   getAllProjects,
   setAutoApprove,
+  setAutoDecision,
   upsertSession,
   getSession,
   updateSessionStatus,
@@ -80,6 +89,18 @@ describe("database", () => {
       setAutoApprove("ch1", false);
       expect(getProject("ch1")!.auto_approve).toBe(0);
     });
+  });
+
+  it("migrates existing projects to auto-decision off while preserving their settings", () => {
+    migration.legacy = true;
+    try { initDatabase(); } finally { migration.legacy = false; }
+    expect(getProject("legacy")).toMatchObject({ project_path: "/old/project", auto_approve: 1, auto_decision: 0 });
+    setAutoDecision("legacy", true);
+    expect(getProject("legacy")!.auto_decision).toBe(1);
+    registerProject("other", "/other", "old-guild");
+    expect(getProject("other")!.auto_decision).toBe(0);
+    setAutoDecision("legacy", false);
+    expect(getProject("legacy")!.auto_decision).toBe(0);
   });
 
   // ─── Session CRUD ───

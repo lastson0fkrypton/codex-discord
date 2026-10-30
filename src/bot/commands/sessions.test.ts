@@ -113,6 +113,7 @@ describe("sessions command", () => {
       project_path: "/project",
       guild_id: "guild-1",
       auto_approve: 0,
+      auto_decision: 0,
       created_at: "2026-09-26",
     });
   });

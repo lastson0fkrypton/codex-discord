@@ -3,6 +3,7 @@ import { z } from "zod";
 const envSchema = z.object({
   DISCORD_BOT_TOKEN: z.string().min(1, "DISCORD_BOT_TOKEN is required"),
   DISCORD_GUILD_ID: z.string().min(1, "DISCORD_GUILD_ID is required"),
+  DISCORD_CHANNEL_ID: z.string().trim().regex(/^(?:\d{17,20})?$/, "DISCORD_CHANNEL_ID must be a numeric Discord channel ID").optional(),
   ALLOWED_USER_IDS: z
     .string()
     .min(1, "ALLOWED_USER_IDS is required")
@@ -13,6 +14,7 @@ const envSchema = z.object({
     .enum(["true", "false"])
     .default("true")
     .transform((v) => v === "true"),
+  DISCORD_VERBOSE: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
 });
 
 export type Config = z.infer<typeof envSchema>;

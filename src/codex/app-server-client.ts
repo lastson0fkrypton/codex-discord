@@ -56,7 +56,7 @@ interface JsonRpcNotification {
 }
 
 interface JsonRpcServerRequest {
-  id: number;
+  id: number | string;
   method: string;
   params: Record<string, unknown>;
 }
@@ -74,6 +74,10 @@ function isObject(value: unknown): value is Record<string, unknown> {
 function shouldUseShell(command: string): boolean {
   return process.platform === "win32" && /\.(cmd|bat)$/i.test(command);
 }
+
+const DISCORD_INSTRUCTIONS = "The user is interacting through Discord. Use structured user-input questions when you need a decision. " +
+  "If a decision is required before continuing, ask a blocking question and wait. If that tool is unavailable, end the turn with your question and a short bullet list of choices. " +
+  "Wait for the user's answer; elapsed time alone does not authorize a decision. Only when the client explicitly provides an authorized five-minute fallback may you choose the most likely answer from context and continue; explain the choice you make.";
 
 export class CodexAppServerClient extends EventEmitter {
   private static readonly REQUEST_TIMEOUT_MS = 15_000;
@@ -136,6 +140,8 @@ export class CodexAppServerClient extends EventEmitter {
         experimentalApi: true,
       },
     });
+
+    this.process.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "initialized" })}\n`);
 
     this.initialized = true;
   }
@@ -225,7 +231,7 @@ export class CodexAppServerClient extends EventEmitter {
     return this.requestWithProcess<T>(method, params);
   }
 
-  async respond(requestId: number, result: Record<string, unknown>): Promise<void> {
+  async respond(requestId: number | string, result: Record<string, unknown>): Promise<void> {
     await this.ensureStarted();
     if (!this.process) throw new Error("Codex app-server is not running");
     this.process.stdin.write(
@@ -257,6 +263,7 @@ export class CodexAppServerClient extends EventEmitter {
       approvalPolicy: "on-request",
       sandbox: "workspace-write",
       modelProvider: "openai",
+      developerInstructions: DISCORD_INSTRUCTIONS,
     });
     return result.thread;
   }
@@ -264,20 +271,27 @@ export class CodexAppServerClient extends EventEmitter {
   async resumeThread(threadId: string): Promise<CodexThreadSummary> {
     const result = await this.request<{ thread: CodexThreadSummary }>("thread/resume", {
       threadId,
+      developerInstructions: DISCORD_INSTRUCTIONS,
     });
     return result.thread;
   }
 
-  async startTurn(threadId: string, prompt: string): Promise<{ id: string }> {
+  async startTurn(threadId: string, prompt: string, imagePaths: string[] = []): Promise<{ id: string }> {
     const result = await this.request<{ turn: { id: string } }>("turn/start", {
       threadId,
-      input: [{ type: "text", text: prompt }],
+      input: [{ type: "text", text: prompt }, ...imagePaths.map((path) => ({ type: "localImage", path }))],
     });
     return result.turn;
   }
 
   async interruptTurn(threadId: string, turnId: string): Promise<void> {
     await this.request("turn/interrupt", { threadId, turnId });
+  }
+
+  async steerTurn(threadId: string, turnId: string, prompt: string, imagePaths: string[] = []): Promise<void> {
+    await this.request("turn/steer", { threadId, expectedTurnId: turnId,
+      input: [{ type: "text", text: prompt }, ...imagePaths.map((path) => ({ type: "localImage", path }))],
+    });
   }
 
   async readRateLimits(): Promise<CodexRateLimitsResponse> {

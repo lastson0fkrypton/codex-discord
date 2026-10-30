@@ -12,7 +12,26 @@ vi.mock("../utils/config.js", () => ({
   })),
 }));
 
-import { isAllowedUser, checkRateLimit, validateProjectPath } from "./guard.js";
+import { getConfig } from "../utils/config.js";
+import { isAllowedChannel, isAllowedUser, checkRateLimit, validateProjectPath } from "./guard.js";
+
+describe("isAllowedChannel", () => {
+  it.each([undefined, ""])("allows multiple channels when DISCORD_CHANNEL_ID is %j", (channelId) => {
+    vi.mocked(getConfig).mockReturnValueOnce({ ...getConfig(), DISCORD_CHANNEL_ID: channelId });
+    expect(isAllowedChannel("other-channel", "g")).toBe(true);
+  });
+
+  it.each([
+    ["allowed", "g", true],
+    ["other", "g", false],
+    ["thread", "g", false],
+    ["allowed", "other-guild", false],
+    [null, null, false],
+  ] as const)("checks channel %j and guild %j", (channelId, guildId, expected) => {
+    vi.mocked(getConfig).mockReturnValueOnce({ ...getConfig(), DISCORD_CHANNEL_ID: "allowed" });
+    expect(isAllowedChannel(channelId, guildId)).toBe(expected);
+  });
+});
 
 // ─── isAllowedUser ───
 

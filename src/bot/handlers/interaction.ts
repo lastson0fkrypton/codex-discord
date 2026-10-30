@@ -111,24 +111,26 @@ export async function handleButtonInteraction(
   if (action === "ask-opt") {
     const lastColon = requestId.lastIndexOf(":");
     const actualRequestId = requestId.slice(0, lastColon);
-    const selectedLabel = ("label" in interaction.component ? interaction.component.label : null) ?? "Unknown";
-
-    const resolved = sessionManager.resolveQuestion(actualRequestId, selectedLabel);
+    const resolved = sessionManager.resolveQuestion(actualRequestId, [requestId.slice(lastColon + 1)], interaction.channelId);
     if (!resolved) {
       await interaction.reply({ content: L("This question has expired.", "이 질문은 만료되었습니다."), ephemeral: true });
       return;
     }
 
     await interaction.update({
-      content: L(`✅ Selected: **${selectedLabel}**`, `✅ 선택됨: **${selectedLabel}**`),
+      content: `✅ Selected: ${resolved.join(", ")}`.slice(0, 2000),
       embeds: [],
       components: [],
+      allowedMentions: { parse: [] },
     });
     return;
   }
 
   if (action === "ask-other") {
-    sessionManager.enableCustomInput(requestId, interaction.channelId);
+    if (!sessionManager.enableCustomInput(requestId, interaction.channelId)) {
+      await interaction.reply({ content: "This question is no longer pending.", ephemeral: true });
+      return;
+    }
     await interaction.update({
       content: L("✏️ Type your answer...", "✏️ 답변을 입력하세요..."),
       embeds: [],
@@ -265,7 +267,7 @@ export async function handleButtonInteraction(
     return;
   }
 
-  const resolved = sessionManager.resolveApproval(requestId, decision);
+  const resolved = sessionManager.resolveApproval(requestId, decision, interaction.channelId);
   if (!resolved) {
     await interaction.reply({
       content: L("This approval request has expired.", "이 승인 요청은 만료되었습니다."),
@@ -299,23 +301,17 @@ export async function handleSelectMenuInteraction(
 
   if (interaction.customId.startsWith("ask-select:")) {
     const askRequestId = interaction.customId.slice("ask-select:".length);
-    const options = (interaction.component as any).options ?? [];
-    const selectedLabels = interaction.values.map((val: string) => {
-      const opt = options.find((o: any) => o.value === val);
-      return opt?.label ?? val;
-    });
-    const answer = selectedLabels.join(", ");
-
-    const resolved = sessionManager.resolveQuestion(askRequestId, answer);
+    const resolved = sessionManager.resolveQuestion(askRequestId, interaction.values, interaction.channelId);
     if (!resolved) {
       await interaction.reply({ content: L("This question has expired.", "이 질문은 만료되었습니다."), ephemeral: true });
       return;
     }
 
     await interaction.update({
-      content: L(`✅ Selected: **${answer}**`, `✅ 선택됨: **${answer}**`),
+      content: `✅ Selected: ${resolved.join(", ")}`.slice(0, 2000),
       embeds: [],
       components: [],
+      allowedMentions: { parse: [] },
     });
     return;
   }

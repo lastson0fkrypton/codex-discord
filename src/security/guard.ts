@@ -18,6 +18,12 @@ export function isAllowedUser(userId: string): boolean {
   return config.ALLOWED_USER_IDS.includes(userId);
 }
 
+export function isAllowedChannel(channelId: string | null, guildId: string | null): boolean {
+  const config = getConfig();
+  if (!config.DISCORD_CHANNEL_ID) return true;
+  return guildId === config.DISCORD_GUILD_ID && channelId === config.DISCORD_CHANNEL_ID;
+}
+
 export function checkRateLimit(userId: string): boolean {
   const config = getConfig();
   const now = Date.now();

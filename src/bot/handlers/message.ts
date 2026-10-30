@@ -1,6 +1,6 @@
 import { Message, TextChannel, Attachment, ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
 import { getProject } from "../../db/database.js";
-import { isAllowedUser, checkRateLimit } from "../../security/guard.js";
+import { isAllowedChannel, isAllowedUser, checkRateLimit } from "../../security/guard.js";
 import { sessionManager } from "../../codex/session-manager.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -36,7 +36,7 @@ async function downloadAttachment(
     fs.mkdirSync(uploadDir, { recursive: true });
   }
 
-  const fileName = `${Date.now()}-${attachment.name}`;
+  const fileName = `${Date.now()}-${path.basename(attachment.name ?? "attachment")}`;
   const filePath = path.join(uploadDir, fileName);
 
   try {
@@ -57,6 +57,7 @@ async function downloadAttachment(
 
 export async function handleMessage(message: Message): Promise<void> {
   if (message.author.bot || !message.guild) return;
+  if (!isAllowedChannel(message.channelId, message.guildId)) return;
 
   const project = getProject(message.channelId);
   if (!project) return;
@@ -74,8 +75,7 @@ export async function handleMessage(message: Message): Promise<void> {
   if (sessionManager.hasPendingCustomInput(message.channelId)) {
     const text = message.content.trim();
     if (text) {
-      sessionManager.resolveCustomInput(message.channelId, text);
-      await message.react("✅");
+      if (sessionManager.resolveCustomInput(message.channelId, text)) await message.react("✅").catch(() => {});
     }
     return;
   }
@@ -115,6 +115,17 @@ export async function handleMessage(message: Message): Promise<void> {
   const channel = message.channel as TextChannel;
 
   if (sessionManager.isActive(message.channelId)) {
+    try {
+      if (await sessionManager.steerMessage(message.channelId, prompt, imagePaths)) {
+        await message.react("✅").catch(() => {});
+        return;
+      }
+    } catch (error) {
+      console.warn("Could not deliver feedback to the active turn:", error);
+      if (!sessionManager.isActive(message.channelId)) await sessionManager.sendMessage(channel, prompt, imagePaths);
+      else await message.reply("Your feedback was not delivered. Please try again, or use `/stop` first.");
+      return;
+    }
     if (sessionManager.hasQueue(message.channelId)) {
       await message.reply(L("⏳ A message is already waiting to be queued. Please press the button first.", "⏳ 이미 큐 추가 대기 중인 메시지가 있습니다. 버튼을 먼저 눌러주세요."));
       return;
@@ -146,5 +157,5 @@ export async function handleMessage(message: Message): Promise<void> {
     return;
   }
 
-  await sessionManager.sendMessage(channel, prompt);
+  await sessionManager.sendMessage(channel, prompt, imagePaths);
 }

@@ -29,6 +29,11 @@ export function initDatabase(): void {
       created_at TEXT DEFAULT (datetime('now'))
     );
   `);
+
+  const projectColumns = db.prepare("PRAGMA table_info(projects)").all() as Array<{ name: string }>;
+  if (!projectColumns.some((column) => column.name === "auto_decision")) {
+    db.exec("ALTER TABLE projects ADD COLUMN auto_decision INTEGER NOT NULL DEFAULT 0");
+  }
 }
 
 export function getDb(): Database.Database {
@@ -73,6 +78,10 @@ export function setAutoApprove(
     autoApprove ? 1 : 0,
     channelId,
   );
+}
+
+export function setAutoDecision(channelId: string, enabled: boolean): void {
+  db.prepare("UPDATE projects SET auto_decision = ? WHERE channel_id = ?").run(enabled ? 1 : 0, channelId);
 }
 
 // Session queries
