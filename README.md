@@ -132,7 +132,7 @@ cp .env.example .env
 ```env
 DISCORD_BOT_TOKEN=...
 DISCORD_GUILD_ID=...
-DISCORD_CHANNEL_ID=
+DISCORD_CHANNEL_IDS=
 ALLOWED_USER_IDS=123456789012345678
 BASE_PROJECT_DIR=/Users/you/projects
 RATE_LIMIT_PER_MINUTE=10
@@ -141,7 +141,7 @@ DISCORD_VERBOSE=false
 
 Do not add `OPENAI_API_KEY` to `.env` for normal use. This project uses your local `codex login` session instead.
 
-To restrict this bot to one channel, set `DISCORD_CHANNEL_ID` to its numeric ID (enable Discord Developer Mode, then right-click the channel → Copy Channel ID). This blocks commands, autocomplete, buttons, menus, and messages outside that exact channel, including for administrators. Threads have separate IDs and are excluded. Leave it blank to allow multiple project channels. Restart the bot after changing `.env`. Discord may still display slash commands elsewhere; the bot will refuse to run them.
+To restrict this bot to specific channels, set `DISCORD_CHANNEL_IDS` to comma-separated numeric IDs, like `1559093425817522218,1559093425817522219` (enable Discord Developer Mode, then right-click the channel → Copy Channel ID). This blocks commands, autocomplete, buttons, menus, and messages outside those channels, including for administrators. Threads have separate IDs and must be listed explicitly. Leave it blank to allow multiple project channels. Restart the bot after changing `.env`. Discord may still display slash commands elsewhere; the bot will refuse to run them.
 
 4. Start the bot.
 

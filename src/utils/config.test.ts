@@ -14,7 +14,7 @@ describe("config", () => {
     delete process.env.RATE_LIMIT_PER_MINUTE;
     delete process.env.SHOW_COST;
     delete process.env.DISCORD_VERBOSE;
-    delete process.env.DISCORD_CHANNEL_ID;
+    delete process.env.DISCORD_CHANNEL_IDS;
   });
 
   afterEach(() => {
@@ -36,17 +36,24 @@ describe("config", () => {
     expect(config.RATE_LIMIT_PER_MINUTE).toBe(10);
     expect(config.SHOW_COST).toBe(true);
     expect(config.DISCORD_VERBOSE).toBe(false);
-    expect(config.DISCORD_CHANNEL_ID).toBeUndefined();
+    expect(config.DISCORD_CHANNEL_IDS).toEqual([]);
   });
 
-  it.each(["", "1559093425817522218", " 1559093425817522218 "])("accepts optional DISCORD_CHANNEL_ID %j", async (value) => {
-    process.env.DISCORD_CHANNEL_ID = value;
+  it.each([
+    { value: "", expected: [] },
+    { value: "  ", expected: [] },
+    { value: "1559093425817522218", expected: ["1559093425817522218"] },
+    { value: " 1559093425817522218 ", expected: ["1559093425817522218"] },
+    { value: "1559093425817522218, 1559093425817522219", expected: ["1559093425817522218", "1559093425817522219"] },
+    { value: "1559093425817522218,,1559093425817522219,", expected: ["1559093425817522218", "1559093425817522219"] },
+  ])("accepts optional DISCORD_CHANNEL_IDS $value", async ({ value, expected }) => {
+    process.env.DISCORD_CHANNEL_IDS = value;
     const { loadConfig } = await import("./config.js");
-    expect(loadConfig().DISCORD_CHANNEL_ID).toBe(value.trim());
+    expect(loadConfig().DISCORD_CHANNEL_IDS).toEqual(expected);
   });
 
-  it("rejects a channel name instead of a numeric ID", async () => {
-    process.env.DISCORD_CHANNEL_ID = "token-tycoon";
+  it.each(["token-tycoon", "1559093425817522218,token-tycoon", "123"])("rejects invalid channel IDs %j", async (value) => {
+    process.env.DISCORD_CHANNEL_IDS = value;
     const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
       throw new Error("process.exit called");
     });

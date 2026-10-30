@@ -70,7 +70,7 @@ export async function startBot(): Promise<Client> {
           await interaction.respond([]);
         } else if (interaction.isRepliable()) {
           await interaction.reply({
-            content: L("This bot is restricted to its configured channel.", "이 봇은 설정된 채널에서만 사용할 수 있습니다."),
+            content: L("This bot is restricted to its configured channels.", "이 봇은 설정된 채널에서만 사용할 수 있습니다."),
             flags: ["Ephemeral"],
           });
         }

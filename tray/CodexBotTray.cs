@@ -1498,7 +1498,7 @@ class CodexBotTray : Form
             new string[] { "ALLOWED_USER_IDS", L("Allowed User IDs (comma-separated)", "허용된 사용자 ID (쉼표로 구분)") },
             new string[] { "BASE_PROJECT_DIR", L("Base Project Directory", "기본 프로젝트 디렉토리") },
             new string[] { "RATE_LIMIT_PER_MINUTE", L("Rate Limit Per Minute", "분당 요청 제한") },
-            new string[] { "DISCORD_CHANNEL_ID", L("Discord Channel ID (optional)", "Discord 채널 ID (선택 사항)") },
+            new string[] { "DISCORD_CHANNEL_IDS", L("Discord Channel IDs (optional, comma-separated)", "Discord 채널 ID (선택 사항, 쉼표로 구분)") },
         };
 
         string[] defaults = new string[] { "", "", "", "", "10", "" };
@@ -1508,7 +1508,7 @@ class CodexBotTray : Form
             L("e.g. 123456789,987654321", "예: 123456789,987654321"),
             L("e.g. C:\\Users\\you\\projects", "예: C:\\Users\\you\\projects"),
             "10",
-            L("Copy Channel ID; blank allows multiple channels", "채널 ID 복사; 비워두면 여러 채널 허용")
+            L("Comma-separated channel IDs; blank allows all channels", "쉼표로 구분된 채널 ID; 비워두면 모든 채널 허용")
         };
         // Placeholder values from .env.example that should be treated as empty
         var exampleValues = new System.Collections.Generic.HashSet<string>() {

@@ -21,7 +21,7 @@ vi.mock("discord.js", async (importOriginal) => ({
 vi.mock("../utils/config.js", () => ({ getConfig: () => ({
   DISCORD_BOT_TOKEN: "test-token",
   DISCORD_GUILD_ID: "guild",
-  DISCORD_CHANNEL_ID: "1559093425817522218",
+  DISCORD_CHANNEL_IDS: ["1559093425817522218", "1559093425817522219"],
   ALLOWED_USER_IDS: ["admin"],
   BASE_PROJECT_DIR: "/projects",
 }) }));
@@ -67,7 +67,7 @@ function interaction(kind: string, channelId = "other-channel") {
   };
 }
 
-describe("configured Discord channel", () => {
+describe("configured Discord channels", () => {
   it.each(["command", "button", "select"])("rejects %s outside the channel even for an administrator", async (kind) => {
     const incoming = interaction(kind);
     await mocks.listeners.get("interactionCreate")!(incoming);
@@ -85,8 +85,10 @@ describe("configured Discord channel", () => {
     expect(mocks.autocomplete).not.toHaveBeenCalled();
   });
 
-  it.each(["command", "button", "select", "autocomplete"])("routes %s normally in the configured channel", async (kind) => {
-    const incoming = interaction(kind, "1559093425817522218");
+  it.each(["1559093425817522218", "1559093425817522219"].flatMap((channelId) =>
+    ["command", "button", "select", "autocomplete"].map((kind) => [kind, channelId]),
+  ))("routes %s normally in configured channel %s", async (kind, channelId) => {
+    const incoming = interaction(kind, channelId);
     await mocks.listeners.get("interactionCreate")!(incoming);
     const handler = { command: mocks.execute, button: mocks.button, select: mocks.select, autocomplete: mocks.autocomplete }[kind]!;
     expect(handler).toHaveBeenCalledWith(incoming);

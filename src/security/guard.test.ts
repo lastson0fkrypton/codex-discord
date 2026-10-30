@@ -5,6 +5,7 @@ vi.mock("../utils/config.js", () => ({
   getConfig: vi.fn(() => ({
     DISCORD_BOT_TOKEN: "t",
     DISCORD_GUILD_ID: "g",
+    DISCORD_CHANNEL_IDS: [],
     ALLOWED_USER_IDS: ["user1", "user2"],
     BASE_PROJECT_DIR: "/projects",
     RATE_LIMIT_PER_MINUTE: 3,
@@ -16,19 +17,20 @@ import { getConfig } from "../utils/config.js";
 import { isAllowedChannel, isAllowedUser, checkRateLimit, validateProjectPath } from "./guard.js";
 
 describe("isAllowedChannel", () => {
-  it.each([undefined, ""])("allows multiple channels when DISCORD_CHANNEL_ID is %j", (channelId) => {
-    vi.mocked(getConfig).mockReturnValueOnce({ ...getConfig(), DISCORD_CHANNEL_ID: channelId });
+  it("allows multiple channels when DISCORD_CHANNEL_IDS is empty", () => {
+    vi.mocked(getConfig).mockReturnValueOnce({ ...getConfig(), DISCORD_CHANNEL_IDS: [] });
     expect(isAllowedChannel("other-channel", "g")).toBe(true);
   });
 
   it.each([
     ["allowed", "g", true],
+    ["second", "g", true],
     ["other", "g", false],
     ["thread", "g", false],
     ["allowed", "other-guild", false],
     [null, null, false],
   ] as const)("checks channel %j and guild %j", (channelId, guildId, expected) => {
-    vi.mocked(getConfig).mockReturnValueOnce({ ...getConfig(), DISCORD_CHANNEL_ID: "allowed" });
+    vi.mocked(getConfig).mockReturnValueOnce({ ...getConfig(), DISCORD_CHANNEL_IDS: ["allowed", "second"] });
     expect(isAllowedChannel(channelId, guildId)).toBe(expected);
   });
 });

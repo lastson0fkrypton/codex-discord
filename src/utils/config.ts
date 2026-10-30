@@ -3,7 +3,11 @@ import { z } from "zod";
 const envSchema = z.object({
   DISCORD_BOT_TOKEN: z.string().min(1, "DISCORD_BOT_TOKEN is required"),
   DISCORD_GUILD_ID: z.string().min(1, "DISCORD_GUILD_ID is required"),
-  DISCORD_CHANNEL_ID: z.string().trim().regex(/^(?:\d{17,20})?$/, "DISCORD_CHANNEL_ID must be a numeric Discord channel ID").optional(),
+  DISCORD_CHANNEL_IDS: z
+    .string()
+    .default("")
+    .transform((v) => v.split(",").map((id) => id.trim()).filter(Boolean))
+    .pipe(z.array(z.string().regex(/^\d{17,20}$/, "DISCORD_CHANNEL_IDS must contain numeric Discord channel IDs"))),
   ALLOWED_USER_IDS: z
     .string()
     .min(1, "ALLOWED_USER_IDS is required")
